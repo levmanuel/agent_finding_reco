@@ -18,7 +18,7 @@ This project uses multiple AI agents to evaluate audit recommendations by analyz
 ### Setup
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/your-repo/audit-evaluation.git](https://github.com/levmanuel/agent_finding_reco.git)
+   git clone https://github.com/levmanuel/agent_finding_reco.git
    cd audit-evaluation
    ```
 2. Install dependencies:
