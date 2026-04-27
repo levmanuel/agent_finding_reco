@@ -1,48 +1,44 @@
-# Audit Recommendation Evaluation with Ollama
+# Audit Recommendation Evaluation with Ollama & LangChain
 
-## 📌 Overview
-This project uses multiple AI agents to evaluate audit recommendations by analyzing different aspects such as clarity, coherence, deadlines, and deliverables. It leverages the **Ollama** API with the **Llama 3.1** model to generate evaluations and scores.
+## Overview
+Multi-agent pipeline that evaluates French audit recommendations across four dimensions (clarity, coherence, deadlines, deliverables) using local LLMs via Ollama. Specialist agents run in parallel; a coordinator aggregates their structured outputs into a final scored synthesis.
 
-## 🚀 Features
-- **Multi-Agent Evaluation**: Specialized agents assess different aspects of an audit recommendation.
-- **LLM Integration**: Uses Ollama's Llama 3.1 model for intelligent evaluation.
-- **Async Processing**: Efficient execution using Python's `asyncio` and `aiohttp`.
-- **Aggregated Final Score**: A coordinator agent summarizes and scores the recommendation.
+## Features
+- **Multi-agent evaluation**: four specialist agents assess one dimension each, a coordinator synthesizes
+- **Structured output**: scores and evaluations are Pydantic-validated — no regex parsing
+- **Two-speed model routing**: fast model (`llama3.2`) for parallel specialists, capable model (`qwen2.5`) for the coordinator
+- **LangChain orchestration**: `RunnableParallel` for concurrency, `with_structured_output` for reliable JSON extraction
 
-## 🛠 Installation
-### Prerequisites
-- Python 3.8+
-- Ollama running locally (ensure it is accessible at `http://localhost:11434`)
-- Required Python libraries
+## Installation
 
-### Setup
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/levmanuel/agent_finding_reco.git
-   cd agent_finding_reco
-   ```
-2. Install dependencies:
-   ```bash
-   pip install aiohttp
-   ```
-3. Ensure Ollama is running:
-   ```bash
-   ollama serve
-   ```
+**Prerequisites**: Python 3.10+, Ollama running locally at `http://localhost:11434`
 
-## 🏃 Usage
-Run the script with:
+```bash
+git clone https://github.com/levmanuel/agent_finding_reco.git
+cd agent_finding_reco
+pip install langchain-ollama
+ollama pull llama3.2
+ollama pull qwen2.5
+ollama serve
+```
+
+## Usage
+
 ```bash
 python main.py
 ```
-The program will analyze an audit recommendation and print the evaluation results.
 
-## 📋 Example Input
+To evaluate a different recommendation, edit the `recommendation` dict in `main()` or call `evaluate_recommendation(data)` directly from your own code.
+
+**Required fields**: `constat`, `recommandation`, `date_realisation`, `livrables`
+
+## Example Input
+
 ```json
 {
   "constat": "Les contrôles d'accès aux données sensibles ne sont pas documentés systématiquement, ce qui pourrait conduire à des accès non autorisés.",
   "recommandation": "Mettre en place une procédure formelle de documentation et de revue périodique des droits d'accès aux données sensibles.",
-  "date_realisation": "2023-12-31",
+  "date_realisation": "2025-12-31",
   "responsable": "Département Sécurité IT",
   "livrables": [
     "Procédure documentée de gestion des droits d'accès",
@@ -52,29 +48,33 @@ The program will analyze an audit recommendation and print the evaluation result
 }
 ```
 
-## 📊 Output Example
+## Example Output
+
 ```
 🔎 **Évaluation de la Recommandation** 🔍
 
-📌 Constat : Les contrôles d'accès aux données sensibles ne sont pas documentés systématiquement...
+📌 Constat : Les contrôles d'accès aux données sensibles...
 
 ✅ Recommandation : Mettre en place une procédure formelle...
 
 📊 **Scores des agents** :
-  - Constat : 8/10 - Bonne clarté et pertinence.
-  - Coherence : 7/10 - Alignement correct avec le constat.
-  - Delais : 6/10 - Délais potentiellement trop longs.
-  - Livrables : 9/10 - Livrables bien définis.
+  - Constat : 6/10 — Faible à modéré
+  - Coherence : 6/10 — L'évaluation est partielle car le constat est vague...
+  - Delais : 5/10 — La date de réalisation laisse un temps relativement long...
+  - Livrables : 8/10 — Les livrables sont clairement définis...
 
-📢 **Évaluation finale** : Score global 7.5/10. Quelques points d'amélioration sur les délais.
+📢 **Évaluation finale** : 6/10
+
+✅ Points forts :
+  • Les livrables proposés sont clairs et précis.
+  • La recommandation est pertinente et répond directement au constat.
+
+⚠️  Axes d'amélioration :
+  • Le constat devrait être plus détaillé pour clarifier la gravité du problème.
+  • Les délais doivent être raccourcis.
 ```
 
-## 🛠 Troubleshooting
-- If you get **"Erreur: Temps de réponse dépassé"**, ensure Ollama is running and accessible.
-- If responses are empty, check Ollama logs for issues.
-- Use `asyncio.run(main())` only once in the script to avoid runtime errors.
-
-## 🏗 Future Improvements
-- Add more detailed prompt engineering.
-- Enable external API configuration.
-- Implement caching for frequent queries.
+## Troubleshooting
+- **LLM raises a validation error**: the model failed to return valid JSON — retry or switch to a more capable model via `SPECIALIST_MODEL` / `COORDINATOR_MODEL` constants in `main.py`
+- **Ollama not reachable**: ensure `ollama serve` is running and the model is pulled (`ollama pull <model>`)
+- **Scores vary between runs**: LLM output is non-deterministic; scores are also not comparable across different models

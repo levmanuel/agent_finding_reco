@@ -7,25 +7,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Prerequisite**: Ollama must be running locally before executing the script.
 
 ```bash
-ollama serve          # start the local LLM server (must be accessible at http://localhost:11434)
-pip install aiohttp   # only dependency beyond the stdlib
+ollama serve                  # start the local LLM server (must be accessible at http://localhost:11434)
+pip install langchain-ollama  # only non-stdlib dependency
 python main.py
 ```
 
 ## Architecture
 
-The entire system lives in `main.py` and implements a multi-agent evaluation pipeline for French audit recommendations.
+The entire system lives in `main.py` and implements a multi-agent evaluation pipeline for French audit recommendations using LangChain.
 
 **Data flow**:
-1. A recommendation dict (keys: `constat`, `recommandation`, `date_realisation`, `responsable`, `livrables`) is passed to `AgentNetwork.evaluate_recommendation()`.
-2. Four specialist `AuditAgent` instances run **concurrently** via `asyncio.gather`: `constat`, `coherence`, `delais`, `livrables`.
-3. Their results are fed to a fifth `coordinateur` agent that aggregates them into a global score.
-4. `pretty_print_results()` formats the output.
+1. A recommendation dict (required keys: `constat`, `recommandation`, `date_realisation`, `livrables`) is passed to `evaluate_recommendation()`.
+2. `build_pipeline()` constructs a `RunnableParallel` that runs four specialist chains concurrently: `constat`, `coherence`, `delais`, `livrables`.
+3. Each specialist chain is a `ChatPromptTemplate | ChatOllama.with_structured_output(Evaluation)` — output is a validated Pydantic `Evaluation` object (fields: `score: int`, `evaluation: str`).
+4. The coordinator receives condensed summaries (score + first 300 chars per agent) and returns a `FinalEvaluation` Pydantic object with `score`, `points_forts`, `axes_amelioration`, `synthese`.
+5. `pretty_print_results()` formats the output.
 
-**Key classes**:
-- `AuditAgent` — wraps a single Ollama call. Each agent has a `system_prompt` baked in at construction time. `_parse_response` extracts a `score` using a `\d+/10` regex from free-text LLM output.
-- `AgentNetwork` — owns a single shared `aiohttp.ClientSession` (passed to all agents), manages the parallel execution pattern, and must be closed with `await network.close()` to avoid resource leaks.
-
-**LLM integration**: All agents call the same endpoint (`OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"`) with `stream=False` and a 30-second timeout. The model is `llama3.1` and can be changed via the `MODEL` constant.
+**Key design points**:
+- `with_structured_output()` forces the LLM to return schema-validated JSON — no regex parsing. If the LLM fails to comply, LangChain raises an exception (no silent fallback).
+- `RunnableParallel` handles concurrency internally (threadpool); no manual async/session management.
+- Models are set via two constants: `SPECIALIST_MODEL = "llama3.2:latest"` and `COORDINATOR_MODEL = "qwen2.5:7b"`. Scores are not comparable across models.
 
 **Language**: Prompts and output are in French.
