@@ -1,142 +1,143 @@
-import os
 import json
-import re
-import asyncio
-import aiohttp
-from aiohttp import ClientSession
-from typing import Dict, Any
+from typing import Any, Dict
 
-# Configuration Ollama
-OLLAMA_ENDPOINT = "http://localhost:11434/api/generate"
-MODEL = "llama3.1"
+from langchain_ollama import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableParallel, RunnableLambda
+from pydantic import BaseModel, Field
 
-class AuditAgent:
-    def __init__(self, name: str, role: str, system_prompt: str, session: ClientSession):
-        self.name = name
-        self.role = role
-        self.system_prompt = system_prompt
-        self.session = session  # Réutilisation de la session HTTP
+SPECIALIST_MODEL = "llama3.2:latest"
+COORDINATOR_MODEL = "qwen2.5:7b"
+REQUIRED_FIELDS = ["constat", "recommandation", "date_realisation", "livrables"]
 
-    async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Traite les données d'entrée et renvoie une évaluation"""
-        try:
-            prompt = f"{self.system_prompt}\n\nDonnées à évaluer:\n{json.dumps(input_data, indent=2, ensure_ascii=False)}"
-            response = await self._call_llm(prompt)
-            return self._parse_response(response)
-        except Exception as e:
-            return {"agent": self.name, "error": f"Erreur lors du traitement: {str(e)}"}
+SPECIALIST_PROMPTS = {
+    "constat": (
+        "Évaluez la clarté et la pertinence du constat d'audit. "
+        "Un bon constat doit être factuel, précis et basé sur des preuves."
+    ),
+    "coherence": (
+        "Vérifiez la cohérence entre le constat identifié et la recommandation proposée."
+    ),
+    "delais": (
+        "Analysez si la date de réalisation est réaliste et proportionnée "
+        "à la complexité de la recommandation."
+    ),
+    "livrables": (
+        "Évaluez si les livrables sont clairement définis, mesurables et suffisants "
+        "pour vérifier l'implémentation de la recommandation."
+    ),
+}
 
-    async def _call_llm(self, prompt: str) -> str:
-        """Appel à l'API Ollama avec gestion des erreurs"""
-        try:
-            payload = {"model": MODEL, "prompt": prompt, "stream": False}
-            async with self.session.post(OLLAMA_ENDPOINT, json=payload, timeout=30) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get("response", "Erreur: réponse vide")
-                else:
-                    return f"Erreur: API Ollama a retourné {response.status}"
-        except aiohttp.ClientError as e:
-            return f"Erreur réseau: {str(e)}"
-        except asyncio.TimeoutError:
-            return "Erreur: Temps de réponse dépassé"
+COORDINATOR_PROMPT = (
+    "Agrégez les évaluations des agents spécialisés et produisez une synthèse globale. "
+    "Identifiez les points forts et les axes d'amélioration."
+)
 
-    def _parse_response(self, response: str) -> Dict[str, Any]:
-        """Parse la réponse du LLM en structure de données"""
-        try:
-            match = re.search(r"(\d+)/10", response)  # Recherche un score de 0 à 10
-            score = int(match.group(1)) if match else None
-            return {"agent": self.name, "evaluation": response, "score": score}
-        except Exception as e:
-            return {"agent": self.name, "evaluation": response, "error": f"Erreur de parsing: {str(e)}"}
 
-class AgentNetwork:
-    def __init__(self):
-        self.session = ClientSession()  # Une seule session HTTP pour tous les agents
-        self.agents = {
-            "constat": AuditAgent("AnalyseConstat", "Analyste de Constat", 
-                "Évaluez la clarté et la pertinence du constat d'audit. Un bon constat doit être factuel, précis et basé sur des preuves. Fournissez un score de 0 à 10.", self.session),
-            "coherence": AuditAgent("EvaluationCoherence", "Évaluateur de Cohérence", 
-                "Vérifiez la cohérence entre le constat identifié et la recommandation proposée. Fournissez un score de 0 à 10.", self.session),
-            "delais": AuditAgent("VerificationDelais", "Vérificateur de Délais", 
-                "Analysez la pertinence des dates de réalisation. Fournissez un score de 0 à 10.", self.session),
-            "livrables": AuditAgent("ValidationLivrables", "Validateur de Livrables", 
-                "Évaluez si les livrables sont clairement définis, mesurables et permettent de vérifier l'implémentation de la recommandation. Fournissez un score de 0 à 10.", self.session),
-            "coordinateur": AuditAgent("Coordinateur", "Agent Coordinateur", 
-                "Agrégez les évaluations des autres agents et produisez une évaluation globale. Fournissez un résumé clair et un score global de 0 à 10.", self.session)
-        }
+class Evaluation(BaseModel):
+    score: int = Field(..., ge=0, le=10, description="Score de 0 à 10")
+    evaluation: str = Field(..., description="Évaluation détaillée")
 
-    async def evaluate_recommendation(self, recommendation_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Évalue une recommandation d'audit en utilisant tous les agents"""
-        required_fields = ["constat", "recommandation", "date_realisation", "livrables"]
-        missing = [field for field in required_fields if field not in recommendation_data]
-        if missing:
-            return {"error": f"Champs manquants: {', '.join(missing)}"}
 
-        results = {}
-        try:
-            # Exécuter les agents spécialisés en parallèle
-            tasks = [
-                self.agents[agent_name].process(recommendation_data)
-                for agent_name in self.agents if agent_name != "coordinateur"
-            ]
-            completed_tasks = await asyncio.gather(*tasks)
-            for agent_name, result in zip([name for name in self.agents if name != "coordinateur"], completed_tasks):
-                results[agent_name] = result
-            
-            # L'agent coordinateur agrège les résultats
-            final_evaluation = await self.agents["coordinateur"].process({
-                "recommendation": recommendation_data,
-                "evaluations": results
-            })
-            
-            return {
-                "recommendation": recommendation_data,
-                "agent_evaluations": results,
-                "final_evaluation": final_evaluation
-            }
-        except Exception as e:
-            return {"error": f"Évaluation échouée: {str(e)}"}
+class FinalEvaluation(BaseModel):
+    score: int = Field(..., ge=0, le=10, description="Score global de 0 à 10")
+    points_forts: list[str] = Field(..., description="Points forts de la recommandation")
+    axes_amelioration: list[str] = Field(..., description="Axes d'amélioration")
+    synthese: str = Field(..., description="Synthèse globale")
 
-    async def close(self):
-        """Ferme la session HTTP proprement"""
-        await self.session.close()
 
-def pretty_print_results(results: Dict[str, Any]):
-    """Affichage lisible des résultats"""
+def make_specialist_chain(system_prompt: str):
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Données à évaluer:\n{data}"),
+    ])
+    llm = ChatOllama(model=SPECIALIST_MODEL).with_structured_output(Evaluation)
+    return prompt | llm
+
+
+def build_pipeline():
+    specialists = RunnableParallel(**{
+        key: make_specialist_chain(prompt)
+        for key, prompt in SPECIALIST_PROMPTS.items()
+    })
+
+    coordinator_prompt = ChatPromptTemplate.from_messages([
+        ("system", COORDINATOR_PROMPT),
+        ("human", "Recommandation originale:\n{data}\n\nÉvaluations des agents:\n{evaluations}"),
+    ])
+    coordinator_llm = ChatOllama(model=COORDINATOR_MODEL).with_structured_output(FinalEvaluation)
+
+    def run_coordinator(inputs: dict) -> dict:
+        evaluations = "\n".join(
+            f"- {key}: {result.score}/10 — {result.evaluation[:300]}"
+            for key, result in inputs["specialist_results"].items()
+        )
+        final = (coordinator_prompt | coordinator_llm).invoke({
+            "data": inputs["data"],
+            "evaluations": evaluations,
+        })
+        return {"specialist_results": inputs["specialist_results"], "final_evaluation": final}
+
+    def pipeline(data_str: str) -> dict:
+        specialist_results = specialists.invoke({"data": data_str})
+        return run_coordinator({"data": data_str, "specialist_results": specialist_results})
+
+    return pipeline
+
+
+def evaluate_recommendation(data: Dict[str, Any]) -> Dict[str, Any]:
+    missing = [f for f in REQUIRED_FIELDS if f not in data]
+    if missing:
+        return {"error": f"Champs manquants: {', '.join(missing)}"}
+
+    pipeline = build_pipeline()
+    results = pipeline(json.dumps(data, indent=2, ensure_ascii=False))
+    return {"recommendation": data, **results}
+
+
+def pretty_print_results(results: Dict[str, Any]) -> None:
+    if "error" in results:
+        print(f"\n❌ Erreur : {results['error']}")
+        return
+
+    reco = results["recommendation"]
     print("\n🔎 **Évaluation de la Recommandation** 🔍")
-    print(f"\n📌 Constat : {results['recommendation']['constat']}")
-    print(f"\n✅ Recommandation : {results['recommendation']['recommandation']}")
-    
+    print(f"\n📌 Constat : {reco['constat']}")
+    print(f"\n✅ Recommandation : {reco['recommandation']}")
+
     print("\n📊 **Scores des agents** :")
-    for agent, eval in results["agent_evaluations"].items():
-        score = eval.get("score", "N/A")
-        commentaire = eval["evaluation"]
-        print(f"  - {agent.capitalize()} : {score}/10 - {commentaire}")
+    for key, eval_data in results["specialist_results"].items():
+        print(f"  - {key.capitalize()} : {eval_data.score}/10 — {eval_data.evaluation[:120]}")
 
-    print("\n📢 **Évaluation finale** :")
-    print(results["final_evaluation"]["evaluation"])
+    final = results["final_evaluation"]
+    print(f"\n📢 **Évaluation finale** : {final.score}/10")
+    print("\n✅ Points forts :")
+    for point in final.points_forts:
+        print(f"  • {point}")
+    print("\n⚠️  Axes d'amélioration :")
+    for axe in final.axes_amelioration:
+        print(f"  • {axe}")
+    print(f"\n{final.synthese}")
 
-# Exemple d'utilisation
-async def main():
+
+if __name__ == "__main__":
     recommendation = {
-        "constat": "Les contrôles d'accès aux données sensibles ne sont pas documentés systématiquement, ce qui pourrait conduire à des accès non autorisés.",
-        "recommandation": "Mettre en place une procédure formelle de documentation et de revue périodique des droits d'accès aux données sensibles.",
+        "constat": (
+            "Les contrôles d'accès aux données sensibles ne sont pas documentés systématiquement, "
+            "ce qui pourrait conduire à des accès non autorisés."
+        ),
+        "recommandation": (
+            "Mettre en place une procédure formelle de documentation et de revue périodique "
+            "des droits d'accès aux données sensibles."
+        ),
         "date_realisation": "2023-12-31",
         "responsable": "Département Sécurité IT",
         "livrables": [
             "Procédure documentée de gestion des droits d'accès",
             "Tableau de suivi des revues trimestrielles",
-            "Rapport d'audit interne validant l'implémentation"
-        ]
+            "Rapport d'audit interne validant l'implémentation",
+        ],
     }
 
-    network = AgentNetwork()
-    try:
-        evaluation_results = await network.evaluate_recommendation(recommendation)
-        pretty_print_results(evaluation_results)
-    finally:
-        await network.close()  # Fermeture propre de la session HTTP
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    results = evaluate_recommendation(recommendation)
+    pretty_print_results(results)
